@@ -11,156 +11,142 @@ import (
 )
 
 type ReverseIPLookup struct {
-	uniqueDomains map[string]struct{}
+	domainSet map[string]struct{}
 }
 
 func NewReverseIPLookup() *ReverseIPLookup {
 	return &ReverseIPLookup{
-		uniqueDomains: make(map[string]struct{}),
+		domainSet: make(map[string]struct{}),
 	}
 }
 
-func (r *ReverseIPLookup) getDomainsHackerTarget(ip string) ([]string, error) {
+func (r *ReverseIPLookup) fetchDomainsFromHackerTarget(ip string) ([]string, error) {
 	url := fmt.Sprintf("https://api.hackertarget.com/reverseiplookup/?q=%s", ip)
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("error with HackerTarget API: %w", err)
+		return nil, fmt.Errorf("HackerTarget API error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("non-OK status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("HackerTarget API non-OK status: %d", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+		return nil, fmt.Errorf("error reading HackerTarget response: %w", err)
 	}
 
-	domains := strings.Split(string(body), "\n")
-	var result []string
-	for _, domain := range domains {
-		domain = strings.TrimSpace(domain)
-		if domain != "" {
-			result = append(result, domain)
-		}
-	}
-	return result, nil
+	domains := strings.Split(strings.TrimSpace(string(body)), "\n")
+	return domains, nil
 }
 
-func (r *ReverseIPLookup) getDomainsSecurityTrails(ip, apiKey string) ([]string, error) {
+func (r *ReverseIPLookup) fetchDomainsFromSecurityTrails(ip, apiKey string) ([]string, error) {
 	url := fmt.Sprintf("https://api.securitytrails.com/v1/ips/%s/domains", ip)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error creating request: %w", err)
+		return nil, fmt.Errorf("SecurityTrails request creation error: %w", err)
 	}
 	req.Header.Add("apikey", apiKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error with SecurityTrails API: %w", err)
+		return nil, fmt.Errorf("SecurityTrails API error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("non-OK status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("SecurityTrails API non-OK status: %d", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+		return nil, fmt.Errorf("error reading SecurityTrails response: %w", err)
 	}
 
-	// Parse the response body assuming JSON format
 	var data struct {
 		Domains []string `json:"domains"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("error unmarshalling JSON response: %w", err)
+		return nil, fmt.Errorf("error parsing SecurityTrails JSON: %w", err)
 	}
 
 	return data.Domains, nil
 }
 
-func (r *ReverseIPLookup) processIP(ip, apiKey string, wg *sync.WaitGroup) {
+func (r *ReverseIPLookup) processSingleIP(ip, apiKey string, wg *sync.WaitGroup) {
 	defer wg.Done()
-	fmt.Printf("Processing IP: %s\n", ip)
-	domains := make(map[string]struct{})
 
-	// Get domains from HackerTarget
-	htDomains, err := r.getDomainsHackerTarget(ip)
+	domainSet := make(map[string]struct{})
+
+	hackerTargetDomains, err := r.fetchDomainsFromHackerTarget(ip)
 	if err != nil {
-		log.Println("Error getting HackerTarget domains:", err)
+		log.Printf("HackerTarget error for IP %s: %v", ip, err)
 	} else {
-		for _, domain := range htDomains {
-			domains[domain] = struct{}{}
+		for _, domain := range hackerTargetDomains {
+			domainSet[domain] = struct{}{}
 		}
 	}
 
-	// If API key is provided, use SecurityTrails API as well
 	if apiKey != "" {
-		stDomains, err := r.getDomainsSecurityTrails(ip, apiKey)
+		securityTrailsDomains, err := r.fetchDomainsFromSecurityTrails(ip, apiKey)
 		if err != nil {
-			log.Println("Error getting SecurityTrails domains:", err)
+			log.Printf("SecurityTrails error for IP %s: %v", ip, err)
 		} else {
-			for _, domain := range stDomains {
-				domains[domain] = struct{}{}
+			for _, domain := range securityTrailsDomains {
+				domainSet[domain] = struct{}{}
 			}
 		}
 	}
 
-	// Update unique domains
-	for domain := range domains {
-		r.uniqueDomains[domain] = struct{}{}
+	for domain := range domainSet {
+		r.domainSet[domain] = struct{}{}
 	}
 }
 
-func (r *ReverseIPLookup) processIPs(ips []string, apiKey string) {
+func (r *ReverseIPLookup) processAllIPs(ips []string, apiKey string) {
 	var wg sync.WaitGroup
 
 	for _, ip := range ips {
+		if strings.TrimSpace(ip) == "" {
+			continue
+		}
 		wg.Add(1)
-		go r.processIP(ip, apiKey, &wg)
+		go r.processSingleIP(ip, apiKey, &wg)
 	}
 
 	wg.Wait()
 }
 
-func (r *ReverseIPLookup) saveResults(outputFile string) {
-	file, err := ioutil.TempFile(".", outputFile)
+func (r *ReverseIPLookup) saveToFile(filename string) {
+	file, err := ioutil.TempFile(".", filename)
 	if err != nil {
-		log.Fatalf("Failed to create output file: %v", err)
+		log.Fatalf("Could not create file: %v", err)
 	}
 	defer file.Close()
 
-	for domain := range r.uniqueDomains {
-		_, err := file.WriteString(fmt.Sprintf("%s\n", domain))
-		if err != nil {
-			log.Fatalf("Failed to write to file: %v", err)
+	for domain := range r.domainSet {
+		if _, err := file.WriteString(fmt.Sprintf("%s\n", domain)); err != nil {
+			log.Fatalf("Could not write to file: %v", err)
 		}
 	}
-	fmt.Printf("Results saved to %s\n", outputFile)
+	fmt.Printf("Results saved to %s\n", filename)
 }
 
 func main() {
 	inputFile := "iptables.txt"
 	outputFile := "domains_found.txt"
-	securityTrailsAPIKey := "YOUR_API_KEY"
+	apiKey := "YOUR_API_KEY"
 
-	// Read IPs from input file
 	data, err := ioutil.ReadFile(inputFile)
 	if err != nil {
 		log.Fatalf("Error reading input file: %v", err)
 	}
-	ips := strings.Split(string(data), "\n")
+	ips := strings.Split(strings.TrimSpace(string(data)), "\n")
 
-	// Initialize reverse IP lookup
 	lookup := NewReverseIPLookup()
-
-	// Process IPs concurrently
-	lookup.processIPs(ips, securityTrailsAPIKey)
-
-	// Save results to file
-	lookup.saveResults(outputFile)
+	lookup.processAllIPs(ips, apiKey)
+	lookup.saveToFile(outputFile)
 }
+

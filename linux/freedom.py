@@ -10,6 +10,16 @@ def is_admin() -> bool:
     """
     return os.geteuid() == 0
 
+
+def is_ipv6_enabled() -> bool:
+    """Check if IPv6 is enabled in the system."""
+    try:
+        with open('/proc/sys/net/ipv6/conf/all/disable_ipv6', 'r') as f:
+            return f.read().strip() == '0'
+    except FileNotFoundError:
+        # Если файл не существует, считаем, что IPv6 включён
+        return True
+
 def extract_ips_from_static_hots(filename: str) -> None:
     """Extract IPs from a file and append them to the hosts file.
 
@@ -30,6 +40,16 @@ def extract_ips_from_static_hots(filename: str) -> None:
         for index, line in enumerate(lines):
             if index % 2 != 0 and line.strip() not in existing_hosts:
                 f.write('127.0.0.1 ' + line.strip() + '\n')
+                f.write('127.0.1.1 ' + line.strip() + '\n')
+                if is_ipv6_enabled() == True:
+                    f.write('::1 ' + line.strip() + '\n')
+                    f.write('fe00::0 ' + line.strip() + '\n')
+                    f.write('ff02::1 ' + line.strip() + '\n')
+                    f.write('ff02::2 ' + line.strip() + '\n')
+                    
+                else:
+                    print('i cant enable ipv6')
+                    return
 
 extract_ips_from_static_hots('static_hots.txt')
 

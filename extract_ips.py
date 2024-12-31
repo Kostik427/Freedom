@@ -10,6 +10,7 @@ def read_domains(file_path: str) -> List[str]:
 
     Returns:
         List[str]: A list of domain names.
+    
     """
     if not os.path.exists(file_path):
         print(f"Файл {file_path} не найден. Создайте его и добавьте список доменов.")
